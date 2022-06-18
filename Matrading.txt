@@ -1,0 +1,533 @@
+//------------------------------------------------------------------------
+// 简称: SHOSKDJ
+// 名称: SHOSKDJ
+// 类别: 公式应用
+// 类型: 用户应用
+// 输出: Void
+//------------------------------------------------------------------------
+Params
+	//此处添加参数
+	Integer nEntries(1);
+	Numeric incNate(1);
+    Integer maN(10);
+	Integer M(4);
+	Integer N(9);
+	Numeric openRatio(1);
+	Numeric RiskRatio(2);
+	Numeric failopen(2);
+	Numeric fallback(2);
+	Bool    SyncWithPastSignal(True);
+	
+	Numeric daytimeStart(0919);
+	Numeric daytimeEnd(1444);
+	Numeric nighttimeStart(2119);
+	Numeric nightEnd(2239);
+Vars
+	Numeric ma5;
+	Numeric ma10;
+	Numeric ma20;
+	
+	Numeric LOWV;
+	Numeric HIGHV;
+	Numeric RSV;
+	Numeric K;
+	Numeric LLVD;
+
+	
+	Numeric KValue;
+	Numeric DValue;
+	Numeric AbsValue;
+
+
+	Numeric orderPrice;
+
+	Numeric TotalEquity;
+	Numeric openUnits;
+	
+	Series<Numeric> AvgTR;
+
+	
+	global Bool sendorder;
+	global Numeric currentPosition;
+
+Defs
+	//此处添加公式函数
+	Numeric SKDJ_K()
+	{
+		LOWV=Lowest(LOW,N);
+		HIGHV=Highest(HIGH,N);
+		RSV=xaverage((CLOSE-LOWV)/(HIGHV-LOWV)*100,M);
+		K=xaverage(RSV,M);
+		
+		return K;
+	}
+	
+	Numeric SKDJ_D()
+	{
+		LOWV=Lowest(LOW,N);
+		HIGHV=Highest(HIGH,N);
+		RSV=xaverage((CLOSE-LOWV)/(HIGHV-LOWV)*100,M);
+		K=xaverage(RSV,M);
+		LLVD=average(K,M);
+		
+		return LLVD;
+	}
+	
+	Numeric getUnitsNumber(Numeric price, Numeric atr){
+		
+		if(price ==0 or atr == 0)
+			return 0;
+		
+		
+		Numeric totalequity = Portfolio_CurrentCapital() + Portfolio_UsedMargin();
+		
+		Numeric riskmargin = atr * ContractUnit()*BigPointValue();
+		Numeric unitmargin = price * ContractUnit() * BigPointValue() * MarginRatio();
+
+		if(riskmargin ==0 or unitmargin == 0)
+			return 0;
+		
+		
+		Numeric atrunits = (totalequity*RiskRatio/100) /riskmargin;
+		atrunits = IntPart(atrunits); 
+
+		Numeric marginunits = (totalequity*RiskRatio/100) / unitmargin;
+		marginunits = IntPart(marginunits); 
+
+		Return Min(marginunits, atrunits);
+	}
+	
+//返回值如下定义：
+//0 日线
+//1 分钟线
+//2 TICK线
+//3 量线（暂不支持）
+//4 周线
+//5 月线
+//当前数据周期为6日线，Frequency为6d，BarType等于0，BarInterval等于6；
+//当前数据周期为70分钟线，Frequency为70m，BarType等于1，BarInterval等于70；
+//当前数据周期为1TICK线，Frequency为tick，BarType等于2，BarInterval等于1；
+//当前数据周期为10秒线，Frequency为10s，BarType等于2，BarInterval等于20；
+//当前数据周期为1周线，Frequency为1w，BarType等于4，BarInterval等于1；
+//当前数据周期为1月线，Frequency为1mon，BarType等于5，BarInterval等于1；
+//当前数据周期为N秒(N >=60)、N日(N>=7)，建议使用Frequency，表达周期更为准确。
+
+	Bool OpenTradingTime(){
+		if (BarType == 1 or BarType == 2)
+			return (Time > daytimeStart/ 10000 and Time < daytimeEnd/10000) Or ( Time > nighttimeStart/10000 and  Time < nightEnd/10000) ;
+			
+		return true;
+	}
+
+	Bool CloseTradingTime(){
+		
+		if (BarType == 1 or BarType == 2)
+			return (Time > daytimeEnd/10000 and  Time < 0.1600) or (Time > nightEnd/10000 and  Time < 0.2359) ;
+			
+		return false;
+	}
+
+
+	Bool closeWithBuyToCover(Numeric lot, Numeric price){
+		    Array<Integer> orders;
+            //指定账户指定合约开多头单
+            
+            if (lot >0)
+				return A_BuyToCover(Symbol, lot, price, orders, "", "");
+
+            return True;
+	}
+	
+	Bool closeWithSell(Numeric lot, Numeric price){
+		    Array<Integer> orders;
+
+            //指定账户指定合约开多头单
+            
+            if (lot >0)
+				return A_Sell(Symbol, lot, price, orders, "", "");
+
+            return True;
+	}
+	
+	Bool pureSellShort(Numeric lot, Numeric price){
+		    Array<Integer> orders;
+            //指定账户指定合约开多头单
+            if (lot >0)
+				return A_SellShort(Symbol, lot, price, orders, "", "");
+
+            return true;
+	}
+
+	Bool pureBuy(Numeric lot, Numeric price){
+		    Array<Integer> orders;
+            //指定账户指定合约开多头单
+            if (lot >0)
+				return A_Buy(Symbol, lot, price, orders, "", "");
+		
+			return True;
+	}
+	
+	Bool isCloseOnFail(Numeric failcheck){
+
+		if (failcheck <=0 or MarketPosition ==0)
+			return false;
+		
+		if (MarketPosition >0 and EntryPrice > Close + failcheck)
+			return true;
+
+		if (MarketPosition <0 and EntryPrice < Close - failcheck)
+			return true;
+												
+		return False;
+	}
+		
+	Bool isCloseOnSuccess(Numeric successcheck, Numeric N){
+		
+
+		if (successcheck <=0 or N <=0 or MarketPosition ==0 )
+			return false;		
+		
+		Numeric lowv= NthLower(Low,N,1);
+		Numeric highv=NthHigher(High, N, 1);
+		
+		Commentary("isCloseOnSuccess N=" + Text(N) + "  highv=" + Text(highv) + "  lowv=" + Text(lowv)+ "  successcheck=" + Text(successcheck));
+		
+		if (MarketPosition >0 And highv > LastEntryPrice and  highv > Close + successcheck)
+			return true;
+
+		if (MarketPosition <0 and lowv < LastEntryPrice  and lowv < Close - successcheck)
+			return true;		
+		
+		return False;
+	}
+	
+	
+Events
+
+	//Bar更新事件函数，参数indexs表示变化的数据源图层ID数组
+	//这里不做任何信号，之根据信号和仓位对比，做出调整。
+	OnBar(ArrayRef<Integer> indexs)
+	{
+		Commentary("OnBar");
+
+		if (SyncWithPastSignal){
+			
+			if(BarStatus == 2)
+			{
+				Commentary("OnBar1");
+
+				AvgTR = AvgTrueRange(10);
+				Commentary("OnBarClose AvgTR =" + Text(AvgTR));
+				openUnits = getUnitsNumber(Close, AvgTR[1]);	
+
+				Position pos;
+				//获取当前商品的仓位
+				  
+				Bool ret = A_GetPosition(pos, "", 0);
+
+				if (ret == True){
+					Commentary("OnBar2");
+					
+					Bool closetrading = CloseTradingTime();
+					Bool opentrading = OpenTradingTime();
+
+
+					if (MarketPosition ==0 or closetrading == True){
+						Commentary("OnBar3");
+						//Print("MarketPosition ==0");
+
+						//Print("pos.shortCanCoverVolume " + Text(pos.shortCanCoverVolume ));
+						closeWithBuyToCover(pos.shortCanCoverVolume ,Close);
+						//Print("pos.longCanSellVolume" + Text(pos.longCanSellVolume));
+						closeWithSell(pos.longCanSellVolume,Close);
+					}                
+
+					if (MarketPosition >0){
+						Commentary("OnBar4");
+						//Print("MarketPosition == 1");
+
+						////close old position
+						//Print("pos.shortCanCoverVolume " + Text(pos.shortCanCoverVolume ));
+						closeWithBuyToCover(pos.shortCanCoverVolume ,Close);
+								//
+						if (pos.longActiveVolume== 0  And opentrading == True){
+							Commentary("OnBar42");
+							//Print("pos.longCurrentVolume == 0");
+							//Print("openUnits = " + Text(openUnits));
+							
+							if (pos.longCurrentVolume == 0) // 第一次开仓
+								pureBuy(abs(longCurrentContracts), Close);
+								//pureBuy(openUnits, Close);
+							Else if (abs(longCurrentContracts) - pos.longCurrentVolume > 0) {
+								pureBuy(abs(abs(longCurrentContracts) - pos.longCurrentVolume), Close);
+							}
+							else {
+								closeWithSell(abs(abs(longCurrentContracts) - pos.longCurrentVolume),Close);
+							}
+						}
+					}
+
+					if (MarketPosition <0){
+						Commentary("OnBar5");
+						//Print("MarketPosition ==  -1");
+						////close long position before open new
+						//Print("pos.longCanSellVolume" + Text(pos.longCanSellVolume));
+						closeWithSell(pos.longCanSellVolume, Close);
+
+						if (pos.shortActiveVolume == 0  And opentrading == True)
+						{
+							Commentary("OnBar52");
+							//Print("pos.shortCurrentVolume == 0");
+							//Print("openUnits = " + Text(openUnits));
+							
+							if (pos.shortCurrentVolume == 0){
+								pureSellShort(abs(shortCurrentContracts),Close);
+							}
+								//pureSellShort(openUnits,Close);
+							Else if (abs(shortCurrentContracts) - pos.shortCurrentVolume > 0) {
+								pureSellShort(abs(abs(shortCurrentContracts) - pos.shortCurrentVolume),Close);
+							} else {
+								closeWithBuyToCover(abs(abs(shortCurrentContracts) - pos.shortCurrentVolume) ,Close);
+							}
+						}
+					}
+				}
+			}		
+		}
+	}
+
+	//下一个Bar开始前，重新执行当前bar最后一次，参数为当前bar的图层数组
+	//所有信号来自  OnBarClose(), 信号发出未成交的仓位，由OnBar()  去调整
+	OnBarClose(ArrayRef<Integer> indexs)
+	{
+		//Print("OnBarClose");
+		Commentary("OnBarClose #1  sendorder = " + text(IIF (sendorder, 1 , 0)));
+		Numeric lowv= lowest(Low,N);
+		Numeric highv=Highest(High, N);
+		
+		Commentary("isCloseOnSuccess N=" + Text(N) + "  highv=" + Text(highv) + "  lowv=" + Text(lowv));
+		
+        if (sendorder == false) {
+			Commentary("OnBarClose #2 本周期没有下单。");
+
+
+			ma5  = Average(Close, 5);
+			ma10 = Average(Close, 10);
+			ma20 = Average(Close, 20);
+			
+			KValue = SKDJ_K();
+			DValue = SKDJ_D();
+			AbsValue = Abs(KValue - DValue);
+			orderPrice = Close;
+			
+			//用 atr 计算风险的开仓手数
+			AvgTR = AvgTrueRange(10);
+			Commentary("OnBarClose AvgTR =" + Text(AvgTR));
+			
+			openUnits = getUnitsNumber(Close, AvgTR);
+
+			Bool closetrading = CloseTradingTime();
+			Bool opentrading  = OpenTradingTime();
+			Bool failclose = isCloseOnFail(AvgTR * failopen);
+			Bool fallbackclose = isCloseOnSuccess(AvgTR * fallback, 10);
+
+			if( closetrading == True ){ // 收尾平仓
+				Commentary("OnBarClose #3 收尾平仓。");
+			
+				If(longCurrentContracts > 0 ) // 有多仓的情况
+				{
+					
+					Commentary("OnBarClose #4 ##多仓平 closetrading() == True "+ Text(Close) + "longCurrentContracts = " + Text(longCurrentContracts));
+					Sell(longCurrentContracts, Close);
+					currentPosition =0;
+					sendorder= true;
+				}
+					
+				If(shortCurrentContracts > 0) // 有空仓的情况
+				{
+					Commentary("OnBarClose #5 ##空仓平 closetrading() == True "+ Text(Close) + "shortCurrentContracts = " + Text(shortCurrentContracts));
+					BuyToCover(shortCurrentContracts, Close);
+					currentPosition =0;
+					sendorder= true;
+				}
+				
+				Return;
+			} else {
+				Commentary("OnBarClose #6 交易时间。");
+				
+				If(MarketPosition>0)  // 有多仓的情况, 满足平仓条件
+				{
+					Commentary("OnBarClose #7 MarketPosition>0");
+					Commentary("OnBarClose #7 MarketPosition>0 LastEntryPrice= " + Text(LastEntryPrice) + "AvgTR= " + Text(AvgTR) + "Close= " + Text(Close) );
+
+					//平仓
+					if (ma10 > ma5 or failclose or fallbackclose ) { //or  Close < ma5 or
+						Commentary("OnBarClose #71 ##多仓平仓条件满足，平仓价 ="+ Text(Close));
+						Commentary("OnBarClose #71 ##多仓平仓条件满足, closetrading() == True "+ Text(Close) + "longCurrentContracts = " + Text(longCurrentContracts));
+						Commentary("OnBarClose #71 ##多仓平仓条件满足，KValue < DValue ="+  text(IIF (KValue < DValue, 1 , 0)));
+						Commentary("OnBarClose #71 ##多仓平仓条件满足，ma10 > ma5 ="+ text(IIF (ma10 > ma5, 1 , 0)));
+						Commentary("OnBarClose #71 ##多仓平仓条件满足，failclose ="+ text(IIF (failclose, 1 , 0)));
+						Commentary("OnBarClose #71 ##多仓平仓条件满足，fallbackclose ="+ text(IIF (fallbackclose, 1 , 0)));
+						
+						
+						Sell(longCurrentContracts(), Close);   //close  all order
+						currentPosition =0;
+						sendorder= true;
+					}
+					else {
+						//加仓
+						Commentary("OnBarClose #72 ##加仓检查");
+
+						if ( CurrentEntries < nEntries)
+						{
+							Commentary("OnBarClose #721 ##加仓检查");
+							
+							if (LastEntryPrice + AvgTR * incNate < Close)
+							{
+								Commentary("OnBarClose #7211 ##加仓检查");
+								
+								Buy(openUnits, Close);
+								currentPosition = openUnits;
+								sendorder= true;								
+							}
+						}
+					}
+					
+				}
+				
+
+				If(MarketPosition <0) // 有空仓的情况, 满足平仓条件
+				{
+					Commentary("OnBarClose #8 MarketPosition<0");
+					Commentary("OnBarClose #8 MarketPosition>0 LastEntryPrice= " + Text(LastEntryPrice) + "AvgTR= " + Text(AvgTR) + "Close= " + Text(Close) );
+					
+					//平仓
+					if (ma10 < ma5  or failclose  or fallbackclose ) { // Close > ma5 or 
+						Commentary("OnBarClose #81 ##空仓平仓条件满足，平仓价 ="+ Text(Close));
+						Commentary("OnBarClose #71 ##多仓平仓条件满足, closetrading() == True "+ Text(Close) + "shortCurrentContracts = " + Text(shortCurrentContracts));
+						Commentary("OnBarClose #81 ##空仓平仓条件满足，KValue > DValue ="+  text(IIF (KValue > DValue, 1 , 0)));
+						Commentary("OnBarClose #81 ##空仓平仓条件满足，ma10 < ma5 ="+ text(IIF (ma10 < ma5, 1 , 0)));
+						Commentary("OnBarClose #81 ##空仓平仓条件满足，failclose ="+ text(IIF (failclose, 1 , 0)));
+						Commentary("OnBarClose #81 ##空仓平仓条件满足，fallbackclose ="+ text(IIF (fallbackclose, 1 , 0)));						
+						
+						
+						BuyToCover(shortCurrentContracts, Close); //close  all order
+						currentPosition =0;
+						sendorder= true;
+					}
+					else {
+						//加仓
+						Commentary("OnBarClose #82 ##加仓检查");
+						
+						if ( CurrentEntries < nEntries)
+						{
+							Commentary("OnBarClose #821 ##加仓检查");
+							
+							if (LastEntryPrice - AvgTR * incNate > Close)
+							{
+								Commentary("OnBarClose #8211 ##加仓检查");
+
+								SellShort(openUnits, Close);
+								currentPosition = openUnits;
+								sendorder= true;								
+							}
+						}
+					}
+				}
+
+				If( MarketPosition == 0 and opentrading == True){ //sendorder == false and
+					Commentary("OnBarClose #9 开仓检查 MarketPosition = 0");
+	
+					if(Close > ma5 + AvgTR * openRatio and ma5> ma20 ){ // (ma5> ma20) {// 
+						Commentary("OnBarClose #91 开仓检查");
+
+						if (AbsValue >2 and KValue >DValue)
+						{
+							Commentary("OnBarClose #911 @@@@@ 开仓价====多" + Text(Close));
+							if(openUnits >=1)
+							{
+								Commentary("OnBarClose #9111 @@@@@ 开仓价====多" + Text(Close));
+
+								Buy(openUnits, Close);
+								currentPosition = openUnits;
+								sendorder= true;
+							}
+						}
+					}
+					
+					if (Close < ma5 - AvgTR * openRatio and ma5< ma20 ){ //	if (ma5< ma20) {  //
+						Commentary("OnBarClose #92 开仓检查");
+
+						if (AbsValue >2 and KValue < DValue)
+						{
+							Commentary("OnBarClose #921 @@@@@ 开仓价====空" + Text(Close));
+							if(openUnits >=1)
+							{
+								Commentary("OnBarClose #9211 @@@@@ 开仓价====空" + Text(Close));
+							
+								SellShort(openUnits, Close);
+								currentPosition=-openUnits;
+								sendorder= true;
+							}
+						}
+					}
+				}
+			}
+
+		} else{
+			Commentary("本周期已经下单过了。");
+		}
+
+	}
+
+    OnBarOpen(ArrayRef<Integer> indexs)
+    {
+   		//Print("OnBarOpen");
+	    sendorder =false;
+	}
+	
+	//此处实现事件函数
+	OnInit(){
+		sendorder =false;
+	}
+	
+	OnReady(){
+	}	
+
+	//策略账户仓更新事件函数，参数pos表示更新的账户仓结构体
+	OnStrategyPosition(PositionRef pos)
+	{
+		//Print("OnStrategyPosition");
+	}
+
+	//委托更新事件函数，参数ord表示更新的委托结构体
+	OnOrder(OrderRef ord)
+	{
+		//Print("OnOrder");
+	}
+	
+	OnFill(FillRef ordFill)
+	{
+		//Print("OnFill");
+		//Print("### accountId" + Text(ordFill.accountIndex));
+	}
+	
+	//持仓更新事件函数，参数pos表示更新的持仓结构体
+	OnPosition(PositionRef pos)
+	{
+		//Print("OnPosition");
+	}
+
+
+	//当前策略退出时触发
+	OnExit()
+	{
+
+	}
+
+//------------------------------------------------------------------------
+// 编译版本	2022/05/23 152528
+// 版权所有	savy2021
+// 更改声明	TradeBlazer Software保留对TradeBlazer平台
+//			每一版本的TradeBlazer公式修改和重写的权利
+//------------------------------------------------------------------------
